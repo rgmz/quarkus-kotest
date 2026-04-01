@@ -1,0 +1,5 @@
+name: quarkus-kotest
+title: Kotest
+version: dev
+nav:
+  - modules/ROOT/nav.adoc
