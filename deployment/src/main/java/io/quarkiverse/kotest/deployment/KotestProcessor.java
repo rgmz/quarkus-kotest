@@ -11,4 +11,5 @@ class KotestProcessor {
     FeatureBuildItem feature() {
         return new FeatureBuildItem(FEATURE);
     }
+
 }
