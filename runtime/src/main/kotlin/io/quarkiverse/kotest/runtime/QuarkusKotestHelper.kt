@@ -45,4 +45,48 @@ object QuarkusKotestHelper {
     fun tearDownTestScope() {
         TestScopeManager.tearDown(false)
     }
+
+    @JvmStatic
+    fun hasTestTransactionAnnotation(specClass: Class<*>): Boolean {
+        return specClass.annotations.any {
+            it.annotationClass.java.name == "io.quarkus.test.TestTransaction"
+        }
+    }
+
+    @JvmStatic
+    fun beginTransaction() {
+        val tm = getTransactionManager()
+        try {
+            tm.javaClass.getMethod("begin").invoke(tm)
+        } catch (e: Exception) {
+            throw RuntimeException("Failed to begin transaction for @TestTransaction", e)
+        }
+    }
+
+    @JvmStatic
+    fun rollbackTransaction() {
+        val tm = getTransactionManager()
+        try {
+            tm.javaClass.getMethod("rollback").invoke(tm)
+        } catch (_: Exception) {
+            // Transaction may already be rolled back or inactive
+        }
+    }
+
+    private fun getTransactionManager(): Any {
+        val tmClass = try {
+            Class.forName("jakarta.transaction.TransactionManager", true, Thread.currentThread().contextClassLoader)
+        } catch (e: ClassNotFoundException) {
+            throw RuntimeException(
+                "@TestTransaction requires a transaction manager. " +
+                    "Add quarkus-narayana-jta (or another JTA provider) to your dependencies.",
+                e
+            )
+        }
+        return Arc.container().instance<Any>(tmClass).get()
+            ?: throw RuntimeException(
+                "TransactionManager CDI bean not available. " +
+                    "Ensure quarkus-narayana-jta is on the classpath."
+            )
+    }
 }

@@ -11,7 +11,7 @@
     <name>Quarkus Kotest - Integration Tests</name>
 
     <properties>
-        <skipITs>true</skipITs>
+        <skipITs>false</skipITs>
     </properties>
 
     <dependencies>
@@ -23,6 +23,14 @@
             <groupId>io.quarkiverse.kotest</groupId>
             <artifactId>quarkus-kotest</artifactId>
             <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-hibernate-orm-panache</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-jdbc-h2</artifactId>
         </dependency>
         <dependency>
             <groupId>io.quarkus</groupId>
@@ -76,6 +84,7 @@
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
+                    <skipTests>${skipITs}</skipTests>
                     <includes>
                         <include>**/*Test.*</include>
                         <include>**/*Spec.*</include>

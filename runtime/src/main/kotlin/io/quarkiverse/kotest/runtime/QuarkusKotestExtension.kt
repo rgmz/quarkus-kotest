@@ -9,9 +9,9 @@ import io.kotest.core.spec.Spec
 import io.kotest.core.test.TestCase
 import io.kotest.engine.test.TestResult
 import kotlinx.coroutines.withContext
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Method
 import kotlin.reflect.KClass
-import kotlin.reflect.full.primaryConstructor
-import kotlin.reflect.jvm.javaType
 
 object QuarkusKotestExtension :
     ConstructorExtension,
@@ -31,7 +31,22 @@ object QuarkusKotestExtension :
     @Volatile
     private var weOwnTheApp: Boolean = false
 
+    @Volatile
+    private var helper: HelperMethods? = null
+
     private val lock = Any()
+
+    /** Cached Method handles for the QuarkusKotestHelper bridge. */
+    private class HelperMethods(cl: ClassLoader) {
+        private val helperClass = cl.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
+        val injectFields: Method = helperClass.getMethod("injectFields", Any::class.java)
+        val setupTestScope: Method = helperClass.getMethod("setupTestScope")
+        val tearDownTestScope: Method = helperClass.getMethod("tearDownTestScope")
+        val beginTransaction: Method = helperClass.getMethod("beginTransaction")
+        val rollbackTransaction: Method = helperClass.getMethod("rollbackTransaction")
+        val hasTestTransaction: Method =
+            helperClass.getMethod("hasTestTransactionAnnotation", Class::class.java)
+    }
 
     // --- ConstructorExtension ---
     // Always create @QuarkusTest specs through QuarkusClassLoader so CDI beans
@@ -72,7 +87,8 @@ object QuarkusKotestExtension :
             val field = spec.javaClass.getDeclaredField("resource")
             field.isAccessible = true
             System.err.println("[QuarkusKotest]   resource field value: ${field.get(spec)}")
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+        }
 
         val app = runningApp
         val cl = appClassLoader
@@ -90,16 +106,28 @@ object QuarkusKotestExtension :
         testCase: TestCase,
         execute: suspend (TestCase) -> TestResult,
     ): TestResult {
-        System.err.println("[QuarkusKotest] TestCaseExtension.intercept() test=${testCase.name.name} spec@${System.identityHashCode(testCase.spec)}")
-        val cl = appClassLoader ?: return execute(testCase)
+        System.err.println(
+            "[QuarkusKotest] TestCaseExtension.intercept() test=${testCase.name.name} spec@${
+                System.identityHashCode(
+                    testCase.spec
+                )
+            }"
+        )
+        val h = helper ?: return execute(testCase)
         val oldTccl = Thread.currentThread().contextClassLoader
-        Thread.currentThread().contextClassLoader = cl
+        Thread.currentThread().contextClassLoader = appClassLoader
         try {
-            setupTestScope(cl)
+            h.setupTestScope.invoke(null)
             try {
-                return execute(testCase)
+                val shouldRollback = h.hasTestTransaction.invoke(null, testCase.spec.javaClass) as Boolean
+                if (shouldRollback) h.beginTransaction.invoke(null)
+                try {
+                    return execute(testCase)
+                } finally {
+                    if (shouldRollback) h.rollbackTransaction.invoke(null)
+                }
             } finally {
-                tearDownTestScope(cl)
+                h.tearDownTestScope.invoke(null)
             }
         } finally {
             Thread.currentThread().contextClassLoader = oldTccl
@@ -114,6 +142,7 @@ object QuarkusKotestExtension :
     override suspend fun afterProject() {
         runningApp = null
         appClassLoader = null
+        helper = null
         weOwnTheApp = false
     }
 
@@ -137,7 +166,7 @@ object QuarkusKotestExtension :
                 val facadeLoader = getFacadeClassLoader()
                     ?: error(
                         "FacadeClassLoader not available. " +
-                            "Ensure quarkus-junit is on the test classpath."
+                                "Ensure quarkus-junit is on the test classpath."
                     )
 
                 System.err.println("[QuarkusKotest] FacadeClassLoader: ${facadeLoader.javaClass.name}")
@@ -156,6 +185,7 @@ object QuarkusKotestExtension :
                     runningApp = existingApp
                     val getClassLoader = existingApp.javaClass.getMethod("getClassLoader")
                     appClassLoader = getClassLoader.invoke(existingApp) as ClassLoader
+                    helper = HelperMethods(appClassLoader!!)
                     weOwnTheApp = false
                     return
                 }
@@ -172,7 +202,7 @@ object QuarkusKotestExtension :
                 } catch (e: NoSuchMethodException) {
                     error(
                         "QuarkusClassLoader ${quarkusCL.javaClass.name} does not have getStartupAction(). " +
-                            "FacadeClassLoader may not have routed the spec class correctly."
+                                "FacadeClassLoader may not have routed the spec class correctly."
                     )
                 }
                 val startupAction = getStartupAction.invoke(quarkusCL)
@@ -181,7 +211,7 @@ object QuarkusKotestExtension :
                 val runMethod = startupAction.javaClass.getMethod("run", Array<String>::class.java)
                 try {
                     runningApp = runMethod.invoke(startupAction, arrayOf<String>())
-                } catch (e: java.lang.reflect.InvocationTargetException) {
+                } catch (e: InvocationTargetException) {
                     throwIfSpentEngine(e)
                     throw e
                 }
@@ -189,6 +219,7 @@ object QuarkusKotestExtension :
                 val getClassLoader = runningApp!!.javaClass.getMethod("getClassLoader")
                 appClassLoader = getClassLoader.invoke(runningApp) as ClassLoader
                 weOwnTheApp = true
+                helper = HelperMethods(appClassLoader!!)
 
                 // Register with Jupiter so it reuses our app instead of re-bootstrapping.
                 // Without this, Jupiter's QuarkusTestExtension would attempt a second
@@ -241,7 +272,7 @@ object QuarkusKotestExtension :
      * If startupAction.run() failed because the app was already started and stopped
      * by another engine, replace the cryptic error with actionable guidance.
      */
-    private fun throwIfSpentEngine(e: java.lang.reflect.InvocationTargetException) {
+    private fun throwIfSpentEngine(e: InvocationTargetException) {
         val cause = generateSequence(e.cause) { it.cause }
         if (cause.any { it.message?.contains("shutdownContext is null") == true }) {
             throw IllegalStateException(MIXED_ENGINE_MESSAGE, e.cause)
@@ -303,24 +334,13 @@ object QuarkusKotestExtension :
     }
 
     // --- QuarkusKotestHelper bridge ---
-    // CDI injection and test scope management are delegated to QuarkusKotestHelper,
-    // a Java class in the runtime module loaded by QuarkusClassLoader. It can directly
-    // call Arc.container(), TestScopeManager, etc. without reflection. We only need
-    // one reflective call per operation to cross the classloader boundary.
+    // CDI injection, test scope, and transaction management are delegated to
+    // QuarkusKotestHelper, loaded by QuarkusClassLoader. It calls Arc.container(),
+    // TestScopeManager, etc. directly. We only cross the classloader boundary via
+    // cached Method handles (one invoke per operation).
 
     private fun injectFields(spec: Spec) {
-        val cl = appClassLoader ?: error("Quarkus not started")
-        val helper = cl.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
-        helper.getMethod("injectFields", Any::class.java).invoke(null, spec)
-    }
-
-    private fun setupTestScope(quarkusClassLoader: ClassLoader) {
-        val helper = quarkusClassLoader.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
-        helper.getMethod("setupTestScope").invoke(null)
-    }
-
-    private fun tearDownTestScope(quarkusClassLoader: ClassLoader) {
-        val helper = quarkusClassLoader.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
-        helper.getMethod("tearDownTestScope").invoke(null)
+        val h = helper ?: error("Quarkus not started")
+        h.injectFields.invoke(null, spec)
     }
 }

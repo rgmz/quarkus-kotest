@@ -1,21 +1,66 @@
 # Quarkus Kotest
 
-A Quarkus extension that integrates the [Kotest](https://kotest.io/) testing framework with Quarkus CDI. Write native Kotest specs (`FunSpec`, `StringSpec`, `BehaviorSpec`, etc.) with `@Inject` fields that resolve from Quarkus's ArC container.
-
-**Status**: Early prototype. CDI field injection works. See [Current Limitations](#current-limitations) below.
+A Quarkus extension that integrates the [Kotest](https://kotest.io/) testing framework with Quarkus CDI. Write native Kotest specs (`FunSpec`, `StringSpec`, `BehaviorSpec`, etc.) with full CDI injection, test transactions, and REST endpoint testing.
 
 ## Quick Start
 
 ```kotlin
 @QuarkusTest
 @ApplyExtension(QuarkusKotestExtension::class)
-class GreetingServiceTest : FunSpec() {
+class GreetingServiceSpec : FunSpec() {
     @Inject
     lateinit var service: GreetingService
 
     init {
         test("greeting works") {
             service.greet("world") shouldBe "Hello, world!"
+        }
+    }
+}
+```
+
+With `@TestTransaction` for automatic database rollback:
+
+```kotlin
+@QuarkusTest
+@TestTransaction
+@ApplyExtension(QuarkusKotestExtension::class)
+class UserRepositorySpec : FunSpec() {
+    @Inject
+    lateinit var userRepo: UserRepository
+
+    init {
+        test("can persist a user") {
+            val user = User(name = "Alice")
+            userRepo.persist(user)
+            userRepo.findByName("Alice")!!.name shouldBe "Alice"
+            // Transaction rolls back here -- database is clean for next test
+        }
+
+        test("database is clean from previous test") {
+            userRepo.findByName("Alice") shouldBe null
+        }
+    }
+}
+```
+
+REST endpoint testing with RestAssured:
+
+```kotlin
+@QuarkusTest
+@ApplyExtension(QuarkusKotestExtension::class)
+class GreetingResourceSpec : FunSpec() {
+    init {
+        beforeSpec {
+            RestAssured.port = Integer.getInteger("quarkus.http.test-port", 8081)
+        }
+
+        test("GET /hello returns 200") {
+            given()
+                .`when`().get("/hello")
+                .then()
+                .statusCode(200)
+                .body(`is`("Hello from Quarkus REST"))
         }
     }
 }
@@ -31,30 +76,28 @@ cd quarkus-kotest
 mvn clean install -Dno-format
 ```
 
-This installs the extension to your local `~/.m2/repository`.
-
 ## Using in Your Project
 
-### 1. Add dependencies to your project's `pom.xml`
+### 1. Add dependencies
 
 ```xml
 <properties>
-    <kotest.version>6.0.1</kotest.version>
+    <kotest.version>6.1.10</kotest.version>
     <quarkus-kotest.version>1.0.0-SNAPSHOT</quarkus-kotest.version>
 </properties>
 
 <dependencies>
-    <!-- Quarkus Kotest extension (runtime) -->
+    <!-- Quarkus Kotest extension -->
     <dependency>
         <groupId>io.quarkiverse.kotest</groupId>
         <artifactId>quarkus-kotest</artifactId>
         <version>${quarkus-kotest.version}</version>
     </dependency>
 
-    <!-- Kotest runner + assertions (test scope) -->
+    <!-- Kotest runner + assertions -->
     <dependency>
         <groupId>io.kotest</groupId>
-        <artifactId>kotest-runner-junit5-jvm</artifactId>
+        <artifactId>kotest-runner-junit6-jvm</artifactId>
         <version>${kotest.version}</version>
         <scope>test</scope>
     </dependency>
@@ -77,42 +120,28 @@ This installs the extension to your local `~/.m2/repository`.
 ### 2. Add Kotlin compilation for tests
 
 ```xml
-<build>
-    <plugins>
-        <plugin>
-            <groupId>org.jetbrains.kotlin</groupId>
-            <artifactId>kotlin-maven-plugin</artifactId>
-            <version>${kotlin.version}</version>
-            <executions>
-                <execution>
-                    <id>test-compile</id>
-                    <goals><goal>test-compile</goal></goals>
-                    <configuration>
-                        <sourceDirs>
-                            <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
-                        </sourceDirs>
-                    </configuration>
-                </execution>
-            </executions>
+<plugin>
+    <groupId>org.jetbrains.kotlin</groupId>
+    <artifactId>kotlin-maven-plugin</artifactId>
+    <version>${kotlin.version}</version>
+    <executions>
+        <execution>
+            <id>test-compile</id>
+            <goals><goal>test-compile</goal></goals>
             <configuration>
-                <jvmTarget>17</jvmTarget>
+                <sourceDirs>
+                    <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
+                </sourceDirs>
             </configuration>
-        </plugin>
-    </plugins>
-</build>
+        </execution>
+    </executions>
+    <configuration>
+        <jvmTarget>17</jvmTarget>
+    </configuration>
+</plugin>
 ```
 
-### 3. Configure parent-first classloading
-
-Add to `src/main/resources/application.properties`:
-
-```properties
-quarkus.class-loading.parent-first-artifacts=io.kotest:kotest-framework-engine-jvm,io.kotest:kotest-runner-junit5-jvm,io.kotest:kotest-runner-junit-platform-jvm,io.kotest:kotest-common-jvm,io.kotest:kotest-assertions-core-jvm,io.kotest:kotest-assertions-shared-jvm,io.kotest:kotest-extensions-jvm,org.jetbrains.kotlin:kotlin-stdlib,org.jetbrains.kotlin:kotlin-reflect,org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm,org.jetbrains.kotlinx:kotlinx-coroutines-core
-```
-
-This is required because Kotest and Kotlin classes must be shared between the system classloader and Quarkus's classloader.
-
-### 4. Configure Surefire
+### 3. Configure Surefire
 
 Ensure Surefire discovers `*Spec` files:
 
@@ -128,13 +157,13 @@ Ensure Surefire discovers `*Spec` files:
 </plugin>
 ```
 
-### 5. Write your tests
+### 4. Write your tests
 
-Place Kotest specs in `src/test/kotlin/`:
+Place Kotest specs in `src/test/kotlin/`. Every spec needs these annotations:
 
 ```kotlin
-@QuarkusTest
-@ApplyExtension(QuarkusKotestExtension::class)
+@QuarkusTest                                       // triggers Quarkus test lifecycle
+@ApplyExtension(QuarkusKotestExtension::class)     // registers the Kotest extension
 class MyServiceSpec : FunSpec() {
     @Inject
     lateinit var myService: MyService
@@ -147,41 +176,39 @@ class MyServiceSpec : FunSpec() {
 }
 ```
 
-For REST endpoint tests, configure RestAssured's port:
+## Features
 
-```kotlin
-init {
-    beforeSpec {
-        RestAssured.port = Integer.getInteger("quarkus.http.test-port", 8081)
-    }
-    // ...
-}
-```
+- **CDI injection** -- `@Inject` fields are resolved from the ArC container
+- **All Kotest spec styles** -- `FunSpec`, `StringSpec`, `BehaviorSpec`, `DescribeSpec`, etc.
+- **`@TestTransaction`** -- automatic transaction begin/rollback per test for database isolation
+- **REST endpoint testing** -- RestAssured works with the Quarkus test HTTP port
+- **Jupiter coexistence** -- plain JUnit tests can exist alongside Kotest specs in the same module
 
 ## How It Works
 
-1. `@QuarkusTest` triggers Quarkus's `FacadeClassLoader` to route the spec class through `QuarkusClassLoader` (augmentation, CDI setup)
-2. `@ApplyExtension(QuarkusKotestExtension::class)` registers the extension with Kotest
-3. `ConstructorExtension` creates spec instances through `QuarkusClassLoader` so CDI types are compatible
-4. `PostInstantiationExtension` injects `@Inject` fields from the ArC container
-5. `TestCaseExtension` activates/deactivates CDI request scope per test
-6. `AfterProjectListener` shuts down the Quarkus application when all specs complete
+The extension bridges the Kotest engine (system classloader) with Quarkus (QuarkusClassLoader):
+
+1. `@QuarkusTest` triggers Quarkus's `FacadeClassLoader` to route the spec through `QuarkusClassLoader` (augmentation, CDI setup)
+2. `ConstructorExtension` creates spec instances through `QuarkusClassLoader` so CDI types are compatible
+3. `PostInstantiationExtension` delegates to `QuarkusKotestHelper` (loaded by QuarkusClassLoader) which calls `Arc.container()` directly to inject `@Inject` fields
+4. `TestCaseExtension` activates/deactivates CDI test scope per test, and wraps `@TestTransaction` specs in begin/rollback
+5. A `@BuildStep` strips `@TestTransaction` from spec classes in the Jandex index so ArC doesn't generate subclass proxies (Kotest's `TestConfiguration` has final methods)
 
 ## Current Limitations
 
+- **No mixed `@QuarkusTest` across engines** -- if both JUnit Jupiter and Kotest specs use `@QuarkusTest` in the same Surefire fork, Jupiter shuts down the app before Kotest runs. The extension detects this and provides a clear error message. Workaround: keep `@QuarkusTest` on Kotest specs only, or put them in separate modules.
+- **No CDI qualifier support** -- `@Inject` resolves beans by type only; `@Named`, custom qualifiers, and `@Dependent` bean cleanup are not yet supported (planned)
 - **No `@InjectMock` / `QuarkusMock` support** (planned)
 - **No `@TestProfile` support** (planned)
 - **No `@QuarkusTestResource` support** (planned)
 - **No `@TestHTTPResource` / `@TestHTTPEndpoint` support** (planned)
-- **RestAssured port must be configured manually** (see above)
-- **`@RequestScoped` beans**: CDI request scope is ThreadLocal-based; if test bodies dispatch to other threads via coroutine dispatchers, request-scoped beans won't be visible on those threads
-- **`SpecExtension` and `TestCaseExtension` intercept methods are not called** (known issue with `@ApplyExtension` registration — `ConstructorExtension` and `PostInstantiationExtension` work because they're looked up differently in Kotest's engine)
+- **RestAssured port must be configured manually** via `beforeSpec { RestAssured.port = Integer.getInteger("quarkus.http.test-port", 8081) }`
 - **Dev mode continuous testing** does not detect Kotest specs (requires Quarkus core changes)
-- **Debug output**: The extension currently prints diagnostic `[QuarkusKotest]` lines to stderr — these will be removed in a future cleanup pass
+- **Debug output** -- the extension prints diagnostic `[QuarkusKotest]` lines to stderr (will be removed before release)
 
 ## Requirements
 
 - Quarkus 3.22+ (for `FacadeClassLoader` support)
-- Kotest 6.0+ (for `@ApplyExtension` with `ConstructorExtension`)
+- Kotest 6.1+ (for `@ApplyExtension` with `ConstructorExtension`)
 - Kotlin 2.0+
 - Java 17+
