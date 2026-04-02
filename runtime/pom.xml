@@ -15,10 +15,45 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-arc</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-stdlib</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-junit</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.kotest</groupId>
+            <artifactId>kotest-framework-engine-jvm</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.jetbrains.kotlinx</groupId>
+            <artifactId>kotlinx-coroutines-core-jvm</artifactId>
+            <scope>provided</scope>
+        </dependency>
     </dependencies>
 
     <build>
+        <sourceDirectory>src/main/kotlin</sourceDirectory>
         <plugins>
+            <plugin>
+                <groupId>org.jetbrains.kotlin</groupId>
+                <artifactId>kotlin-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>compile</id>
+                        <goals>
+                            <goal>compile</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <jvmTarget>17</jvmTarget>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-extension-maven-plugin</artifactId>
@@ -31,6 +66,14 @@
                         </goals>
                         <configuration>
                             <deployment>${project.groupId}:${project.artifactId}-deployment:${project.version}</deployment>
+                            <parentFirstArtifacts>
+                                <parentFirstArtifact>io.kotest:kotest-framework-api-jvm</parentFirstArtifact>
+                                <parentFirstArtifact>io.kotest:kotest-common-jvm</parentFirstArtifact>
+                                <parentFirstArtifact>io.kotest:kotest-framework-engine-jvm</parentFirstArtifact>
+                                <parentFirstArtifact>io.kotest:kotest-runner-junit6-jvm</parentFirstArtifact>
+                                <parentFirstArtifact>io.kotest:kotest-runner-junit-platform-jvm</parentFirstArtifact>
+                                <parentFirstArtifact>org.jetbrains.kotlin:kotlin-stdlib</parentFirstArtifact>
+                            </parentFirstArtifacts>
                         </configuration>
                     </execution>
                 </executions>
