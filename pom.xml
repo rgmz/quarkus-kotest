@@ -25,7 +25,7 @@
     </scm>
 
     <properties>
-        <compiler-plugin.version>3.14.1</compiler-plugin.version>
+        <compiler-plugin.version>3.15.0</compiler-plugin.version>
         <kotlin.version>2.3.10</kotlin.version>
         <kotest.version>6.1.10</kotest.version>
         <kotlinx-coroutines.version>1.10.2</kotlinx-coroutines.version>
