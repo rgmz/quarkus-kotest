@@ -302,79 +302,25 @@ object QuarkusKotestExtension :
         }
     }
 
-    /**
-     * Get the ArC container and the InstanceHandle.get() method, using interface types
-     * (not impl classes) to avoid cross-classloader IllegalAccessException.
-     */
-    private fun getArcContainer(cl: ClassLoader): Pair<Any, java.lang.reflect.Method> {
-        val arcClass = cl.loadClass("io.quarkus.arc.Arc")
-        val container = arcClass.getMethod("container").invoke(null)
-            ?: error("ArC container not available")
-        // Use the ArcContainer interface method, not the impl class method
-        val arcContainerClass = cl.loadClass("io.quarkus.arc.ArcContainer")
-        val instanceMethod = arcContainerClass.getMethod(
-            "instance",
-            Class::class.java,
-            Array<Annotation>::class.java,
-        )
-        return container to instanceMethod
-    }
-
-    private fun getBeanFromHandle(handle: Any, cl: ClassLoader): Any {
-        // Use the InstanceHandle interface to avoid IllegalAccessException on impl class
-        val instanceHandleClass = cl.loadClass("io.quarkus.arc.InstanceHandle")
-        val getMethod = instanceHandleClass.getMethod("get")
-        return getMethod.invoke(handle) ?: error("InstanceHandle.get() returned null")
-    }
-
-    private fun resolveBean(type: Class<*>): Any {
-        val cl = appClassLoader ?: error("Quarkus not started")
-        val (container, instanceMethod) = getArcContainer(cl)
-        val beanType = cl.loadClass(type.name)
-        val handle = instanceMethod.invoke(container, beanType, emptyArray<Annotation>())
-        return getBeanFromHandle(handle, cl)
-    }
+    // --- QuarkusKotestHelper bridge ---
+    // CDI injection and test scope management are delegated to QuarkusKotestHelper,
+    // a Java class in the runtime module loaded by QuarkusClassLoader. It can directly
+    // call Arc.container(), TestScopeManager, etc. without reflection. We only need
+    // one reflective call per operation to cross the classloader boundary.
 
     private fun injectFields(spec: Spec) {
         val cl = appClassLoader ?: error("Quarkus not started")
-        val (container, instanceMethod) = getArcContainer(cl)
-
-        System.err.println("[QuarkusKotest] injectFields for ${spec.javaClass.name}, appCL=${cl.javaClass.name}")
-        var clazz: Class<*>? = spec.javaClass
-        while (clazz != null && clazz != Any::class.java) {
-            for (field in clazz.declaredFields) {
-                val hasInject = field.annotations.any {
-                    it.annotationClass.qualifiedName == "jakarta.inject.Inject"
-                }
-                System.err.println("[QuarkusKotest]   field: ${field.name} type=${field.type.name} hasInject=$hasInject annotations=${field.annotations.map { it.annotationClass.qualifiedName }}")
-                if (hasInject) {
-                    field.isAccessible = true
-                    val beanType = cl.loadClass(field.type.name)
-                    val handle = instanceMethod.invoke(container, beanType, emptyArray<Annotation>())
-                    val bean = getBeanFromHandle(handle, cl)
-                    System.err.println("[QuarkusKotest]   injecting ${bean.javaClass.name} into ${field.name} on spec@${System.identityHashCode(spec)}")
-                    // Use Unsafe.putObjectVolatile for cross-thread visibility
-                    val unsafeClass = Class.forName("sun.misc.Unsafe")
-                    val theUnsafe = unsafeClass.getDeclaredField("theUnsafe")
-                    theUnsafe.isAccessible = true
-                    val unsafe = theUnsafe.get(null)
-                    val offset = unsafeClass.getMethod("objectFieldOffset", java.lang.reflect.Field::class.java)
-                        .invoke(unsafe, field) as Long
-                    unsafeClass.getMethod("putObjectVolatile", Any::class.java, Long::class.javaPrimitiveType, Any::class.java)
-                        .invoke(unsafe, spec, offset, bean)
-                }
-            }
-            clazz = clazz.superclass
-        }
+        val helper = cl.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
+        helper.getMethod("injectFields", Any::class.java).invoke(null, spec)
     }
 
     private fun setupTestScope(quarkusClassLoader: ClassLoader) {
-        val scopeManager = quarkusClassLoader.loadClass("io.quarkus.test.common.TestScopeManager")
-        scopeManager.getMethod("setup", Boolean::class.javaPrimitiveType).invoke(null, false)
+        val helper = quarkusClassLoader.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
+        helper.getMethod("setupTestScope").invoke(null)
     }
 
     private fun tearDownTestScope(quarkusClassLoader: ClassLoader) {
-        val scopeManager = quarkusClassLoader.loadClass("io.quarkus.test.common.TestScopeManager")
-        scopeManager.getMethod("tearDown", Boolean::class.javaPrimitiveType).invoke(null, false)
+        val helper = quarkusClassLoader.loadClass("io.quarkiverse.kotest.runtime.QuarkusKotestHelper")
+        helper.getMethod("tearDownTestScope").invoke(null)
     }
 }
