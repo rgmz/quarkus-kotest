@@ -68,16 +68,10 @@
                             <deployment>${project.groupId}:${project.artifactId}-deployment:${project.version}</deployment>
                             <parentFirstArtifacts>
                                 <parentFirstArtifact>io.kotest:kotest-framework-api-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>io.kotest:kotest-framework-engine-jvm</parentFirstArtifact>
                                 <parentFirstArtifact>io.kotest:kotest-common-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>io.kotest:kotest-assertions-core-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>io.kotest:kotest-assertions-shared-jvm</parentFirstArtifact>
+                                <parentFirstArtifact>io.kotest:kotest-framework-engine-jvm</parentFirstArtifact>
                                 <parentFirstArtifact>io.kotest:kotest-runner-junit6-jvm</parentFirstArtifact>
                                 <parentFirstArtifact>io.kotest:kotest-runner-junit-platform-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>io.kotest:kotest-framework-concurrency-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>io.kotest:kotest-framework-discovery-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>io.kotest:kotest-extensions-jvm</parentFirstArtifact>
-                                <parentFirstArtifact>org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm</parentFirstArtifact>
                                 <parentFirstArtifact>org.jetbrains.kotlin:kotlin-stdlib</parentFirstArtifact>
                             </parentFirstArtifacts>
                         </configuration>

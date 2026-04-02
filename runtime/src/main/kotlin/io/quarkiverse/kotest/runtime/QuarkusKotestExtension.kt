@@ -107,16 +107,14 @@ object QuarkusKotestExtension :
     }
 
     // --- AfterProjectListener ---
+    // Do NOT close the app here. Closing resets static recorder state
+    // (e.g. SmallRyeContextPropagationRecorder) which breaks Jupiter
+    // @QuarkusTest classes that run after the Kotest engine finishes.
+    // The JVM shutdown hook handles cleanup, matching Jupiter's own behavior.
     override suspend fun afterProject() {
-        if (weOwnTheApp && runningApp != null) {
-            try {
-                runningApp!!.javaClass.getMethod("close").invoke(runningApp)
-            } finally {
-                runningApp = null
-                appClassLoader = null
-                weOwnTheApp = false
-            }
-        }
+        runningApp = null
+        appClassLoader = null
+        weOwnTheApp = false
     }
 
     // --- Internal ---
@@ -162,6 +160,11 @@ object QuarkusKotestExtension :
                     return
                 }
 
+                // Best-effort early detection: if Jupiter ran a @QuarkusTest and already
+                // shut down the app, fail fast with a clear message instead of a cryptic
+                // "shutdownContext is null" error from the generated ApplicationImpl.
+                detectSpentEngine(quarkusCL)
+
                 // No running app — start it ourselves via StartupAction
                 System.err.println("[QuarkusKotest] Starting Quarkus application...")
                 val getStartupAction = try {
@@ -176,16 +179,72 @@ object QuarkusKotestExtension :
                     ?: error("No StartupAction on QuarkusClassLoader")
                 System.err.println("[QuarkusKotest] Got StartupAction: ${startupAction.javaClass.name}")
                 val runMethod = startupAction.javaClass.getMethod("run", Array<String>::class.java)
-                runningApp = runMethod.invoke(startupAction, arrayOf<String>())
+                try {
+                    runningApp = runMethod.invoke(startupAction, arrayOf<String>())
+                } catch (e: java.lang.reflect.InvocationTargetException) {
+                    throwIfSpentEngine(e)
+                    throw e
+                }
                 System.err.println("[QuarkusKotest] App started: ${runningApp!!.javaClass.name}")
                 val getClassLoader = runningApp!!.javaClass.getMethod("getClassLoader")
                 appClassLoader = getClassLoader.invoke(runningApp) as ClassLoader
                 weOwnTheApp = true
+
+                // Register with Jupiter so it reuses our app instead of re-bootstrapping.
+                // Without this, Jupiter's QuarkusTestExtension would attempt a second
+                // bootstrap, which fails with corrupted recorder state (e.g. SmallRye).
+                registerWithJupiter(quarkusCL)
             } catch (e: Exception) {
                 System.err.println("[QuarkusKotest] ERROR in ensureStarted: ${e.javaClass.name}: ${e.message}")
                 e.printStackTrace(System.err)
                 throw e
             }
+        }
+    }
+
+    private val MIXED_ENGINE_MESSAGE = """
+        Quarkus was already started and shut down by another test engine (likely JUnit Jupiter).
+        This happens when @QuarkusTest is used on both JUnit and Kotest tests in the same module.
+
+        To fix this, either:
+          1. Remove @QuarkusTest from JUnit test classes in this module, OR
+          2. Move JUnit @QuarkusTest and Kotest @QuarkusTest tests into separate Maven modules
+    """.trimIndent()
+
+    /**
+     * Best-effort early detection of the mixed-engine conflict.
+     * If Jupiter ran a @QuarkusTest and shut down the app, fail fast with a clear message.
+     * Degrades gracefully if Quarkus internals change (catches reflection failures).
+     */
+    private fun detectSpentEngine(quarkusCL: ClassLoader) {
+        try {
+            val extClass = quarkusCL.loadClass("io.quarkus.test.junit.QuarkusTestExtension")
+            val actualTestInstance = extClass.getDeclaredField("actualTestInstance")
+            actualTestInstance.isAccessible = true
+            if (actualTestInstance.get(null) != null) {
+                // Jupiter ran a @QuarkusTest — check if app is still alive
+                val appField = extClass.superclass.getDeclaredField("runningQuarkusApplication")
+                appField.isAccessible = true
+                if (appField.get(null) == null) {
+                    throw IllegalStateException(MIXED_ENGINE_MESSAGE)
+                }
+            }
+        } catch (e: IllegalStateException) {
+            throw e // re-throw our own message
+        } catch (_: Exception) {
+            // Reflection failed (class/field not found, access denied, etc.)
+            // Skip early detection — let it fail naturally if there's a real problem.
+        }
+    }
+
+    /**
+     * If startupAction.run() failed because the app was already started and stopped
+     * by another engine, replace the cryptic error with actionable guidance.
+     */
+    private fun throwIfSpentEngine(e: java.lang.reflect.InvocationTargetException) {
+        val cause = generateSequence(e.cause) { it.cause }
+        if (cause.any { it.message?.contains("shutdownContext is null") == true }) {
+            throw IllegalStateException(MIXED_ENGINE_MESSAGE, e.cause)
         }
     }
 
@@ -221,6 +280,25 @@ object QuarkusKotestExtension :
             appField.get(null)
         } catch (e: Exception) {
             null
+        }
+    }
+
+    /**
+     * Store our RunningQuarkusApplication in Jupiter's static field so that
+     * QuarkusTestExtension finds it and reuses it rather than attempting
+     * a second bootstrap (which fails with corrupted recorder state).
+     */
+    private fun registerWithJupiter(quarkusClassLoader: ClassLoader) {
+        try {
+            val extClass = quarkusClassLoader.loadClass(
+                "io.quarkus.test.junit.AbstractJvmQuarkusTestExtension"
+            )
+            val appField = extClass.getDeclaredField("runningQuarkusApplication")
+            appField.isAccessible = true
+            appField.set(null, runningApp)
+            System.err.println("[QuarkusKotest] Registered running app with Jupiter's QuarkusTestExtension")
+        } catch (e: Exception) {
+            System.err.println("[QuarkusKotest] Could not register with Jupiter: ${e.message}")
         }
     }
 
