@@ -27,7 +27,7 @@
     <properties>
         <compiler-plugin.version>3.14.1</compiler-plugin.version>
         <kotlin.version>2.3.10</kotlin.version>
-        <kotest.version>6.1.10</kotest.version>
+        <kotest.version>6.1.11</kotest.version>
         <kotlinx-coroutines.version>1.10.2</kotlinx-coroutines.version>
         <maven.compiler.release>17</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
